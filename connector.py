@@ -26,6 +26,10 @@ class MailConnector():
 		except Exception as e:
 			return (False, str(e))
 
+	def close(self):
+		self.imap.close()
+		self.imap.logout()
+
 	def get_unseen_mails(self) -> Union[tuple, list[str]]:
 		self.imap.select("INBOX")
 		m = self.imap.uid('search', "UNSEEN", "ALL")
@@ -42,63 +46,75 @@ class MailConnector():
 		except:
 			return int(list(c[1][0].split())[-1])
 
-	def get_mail_text(self, mail_id: Union[bytes, str], edit: bool = True) -> tuple[bool, tuple]:
+
+	def get_mail_text2(self, mail_id: Union[bytes, str]) -> dict[str]:
+		self.imap.select("INBOX")
+		res, msg_data = self.imap.uid('fetch', mail_id, '(RFC822)')
+		
+		if res != "OK" or not msg_data or msg_data == [None]:
+			raise Exception(f'Failed to fetch mail')
+
+		msg = email.message_from_bytes(msg_data[0][1])
+		sender = email.utils.parseaddr(msg['from'])[1]
+		
+		header, encoding = decode_header(msg['Subject'])[0]
+		if isinstance(header, bytes):
+			header = header.decode(encoding if encoding else 'utf-8')
+		
+		if header is None:
+			header = '[Без темы]'
+
+		plain_text, html_text = '', ''
+		if msg.is_multipart() == True:
+			for part in msg.walk():
+				content_type = part.get_content_type()
+				print(content_type)
+				content_disposition = str(part.get("Content-Disposition"))
+				if "attachment" in content_disposition:
+					continue
+				
+				if 'text/plain' in content_type:
+					plain_text += self.decode_part_content(part)
+				elif 'text/html' in content_type:
+					html_text += self.decode_part_content(part)
+		else:
+			content_type = msg.get_content_type()
+
+			content_disposition = str(msg.get("Content-Disposition"))
+			if "attachment" in content_disposition:
+				pass
+			
+			elif 'text/plain' in content_type:
+				plain_text += self.decode_part_content(msg)
+			elif 'text/html' in content_type:
+				html_text += self.decode_part_content(msg)
+				
+		return {'sender': sender, 'header': header, 'plain': plain_text, 'html': html_text}
+
+	def decode_part_content(self, part: email.message.Message) -> str:
+		payload = part.get_payload(decode=True)
+		if not payload:
+			return ''
+		
+		charset = part.get_content_charset() or 'utf-8'
 		try:
-			self.imap.select("INBOX")
-			res, msg = self.imap.uid('fetch', mail_id, '(RFC822)')
-			msg = email.message_from_bytes(msg[0][1])
-			sender = email.utils.parseaddr(msg['from'])[1]
-			if msg["Subject"] == None:
-				header = '[Без темы]'
-			else:
-				try:
-					header = decode_header(msg["Subject"])[0][0].decode()
-				except:
-					header = decode_header(msg["Subject"])[0][0]
+			return payload.decode(charset, errors='replace')
+		except:
+			return payload.decode('utf-8', errors='replace')
 
-			if msg.is_multipart() == True:
-				sp = []
-				codes = []
-				for part in msg.walk():
-				    if part.get_content_maintype() == 'text' and part.get_content_subtype() == 'plain':
-				        sp.append(part.get_payload())
-				        codes.append(part['Content-Transfer-Encoding'])
-			else:
-				sp = [msg.get_payload()]
-				codes = [msg['Content-Transfer-Encoding']]
-			text = ''
-			t = ''
-			for i in range(len(sp)):
-				s = sp[i]
-				try:
-					if codes[i] == 'base64':
-						text += BeautifulSoup(base64.b64decode(s), features="lxml").get_text()
-						t+=base64.b64decode(s)
-					else:
-						text += BeautifulSoup(from_hex(s), features="lxml").get_text()
-						t+=from_hex(s)
-				except:
-					text += BeautifulSoup(s, features="lxml").get_text()
-					t+=s
-			#print(t)
-			if not edit:
-				return t 
-			text = re.sub('(\n){1,}', '\n', text)
-			text = strip_markdown.strip_markdown(text)
-			header = header.replace('&', '&amp;')
-			header = header.replace('<', '&lt;')
-			header = header.replace('>', '&gt;')
-			text = text.replace('\xa0', ' ')
-			text = text.replace('\n>', '')
-			text = text.replace('\r>', '')
-			text = text.replace('\r', '')
-			text = text.replace('&', '&amp;')
-			text = text.replace('<', '&lt;')
-			text = text.replace('>', '&gt;')
-			return (True, (header, text, sender))
-		except Exception as e:
-			return (False, (traceback.format_exc(),))
+	def get_text_from_html(self, html_text: str) -> str:
+		text = BeautifulSoup(html_text, features="lxml").get_text()
 
-	def close(self):
-		self.imap.close()
-		self.imap.logout()
+		text = text.replace('\xa0', ' ')
+		text = text.replace('\n>', '')
+		import re
+		text = re.sub(r'\n{2,}', r'\n', text)
+		text = text.replace('\r>', '')
+		text = text.replace('\r', '')
+		text = text.replace('\u200c', '')
+		text = text.replace('\u200a', '')
+		text = text.replace('&', '&amp;')
+		text = text.replace('<', '&lt;')
+		text = text.replace('>', '&gt;')
+
+		return text.strip().lstrip()

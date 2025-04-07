@@ -6,6 +6,7 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot import types
 import datetime
 import gigachat
+from bs4 import BeautifulSoup
 
 from connector import MailConnector
 from config import VERSION, ADMIN_ID, TOKEN, SERVERS, URL, IMAGE, MAX_FREE_MAILS
@@ -47,24 +48,56 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS tokens(
 	)
 """)
 connect.commit()
-
+cursor.execute("""CREATE TABLE IF NOT EXISTS blacklist(
+	user_id INTEGER,
+	mail TEXT
+	)
+""")
+connect.commit()
 
 @bot.message_handler(commands=['start'])
 async def start_func(message):
-	try:
-		await bot.delete_message(message.from_user.id, message.message.message_id)
-	except:
-		pass
-	if cursor.execute("SELECT * FROM all_users WHERE user_id=?", (message.from_user.id,)).fetchone() == None:
-		cursor.execute("INSERT INTO all_users VALUES(?);", [message.from_user.id])
-		connect.commit()
+	sp = list(message.text.split())
+	if len(sp) == 2:
+		if sp[1][:6] == 'blist_':
+			import base64
+			mail_b64 = sp[1][6:]
+			mail = base64.b64decode(mail_b64).decode("UTF-8")
+			#print(mail)
+			cursor.execute("DELETE FROM blacklist WHERE user_id=? AND mail=?", (message.from_user.id, mail))
+			connect.commit()
+			cursor.execute("INSERT INTO blacklist VALUES(?,?)", [message.from_user.id, mail])
+			connect.commit()
+			markup_added_blacklist = types.InlineKeyboardMarkup()
+			markup_added_blacklist.add(types.InlineKeyboardButton(text='🏴Чёрный список', callback_data='blacklist'))
+			await bot.send_message(message.from_user.id, f'✅Адрес <b>{mail}</b> успешно добавлен в <b>чёрный список</b>.\n\n🛠Управляйте вашим <b>чёрным списком</b> по кнопке ниже👇', reply_markup=markup_added_blacklist, parse_mode='html')
+	else:
+		try:
+			await bot.delete_message(message.from_user.id, message.message.message_id)
+		except:
+			pass
+		if cursor.execute("SELECT * FROM all_users WHERE user_id=?", (message.from_user.id,)).fetchone() == None:
+			cursor.execute("INSERT INTO all_users VALUES(?);", [message.from_user.id])
+			connect.commit()
 
-	from markups import main_menu_markup 
-	await bot.send_photo(message.from_user.id, IMAGE, f'🏠*Главное меню E-Mailed (v.{VERSION})*\n\n_Используйте кнопки ниже для навигации_', parse_mode='markdown', reply_markup=main_menu_markup)
+		from markups import main_menu_markup 
+		await bot.send_photo(message.from_user.id, IMAGE, f'🏠*Главное меню E-Mailed (v.{VERSION})*\n\n_Используйте кнопки ниже для навигации_', parse_mode='markdown', reply_markup=main_menu_markup)
 
 @bot.message_handler(commands=['remove'])
 async def remove_keyboard(message):
 	await bot.send_message(message.from_user.id, '*🧹Клавиатура очищена*', reply_markup=types.ReplyKeyboardRemove(), parse_mode='markdown')
+
+def spam_score(text, key):
+	from gigachat import GigaChat
+	model = GigaChat(
+	   credentials=key,
+	   scope="GIGACHAT_API_PERS",
+	   model="GigaChat",
+	   verify_ssl_certs=False,
+	)
+	response = model.chat(f"Оцени по шкале от 0 до 100, на сколько это письмо похоже на спам? В твоем ответе должно быть только число: {text}")
+
+	return f'{response.choices[0].message.content}'
 
 @bot.message_handler(commands=['startparsing'])
 async def start_parsing(message):
@@ -92,11 +125,26 @@ async def parsing():
 						key = 'none'
 					else:
 						key = m[1]
+
+					black_list = []
+					bt = cursor.execute("SELECT * FROM blacklist WHERE user_id=?", (row[0],)).fetchall()
+					for bro in bt:
+						black_list.append(bro[1])
 					while True:
 						m_id += 1
-						mail_text = mail.get_mail_text(str(m_id))
-						if mail_text[0] == True:
-							header, text, sender = mail_text[1][0], mail_text[1][1], mail_text[1][2]
+						#print(m_id)
+						try:
+							mail_text = mail.get_mail_text2(str(m_id))
+							sender, header, plain_text, html_text = mail_text['sender'], mail_text['header'], mail_text['plain'], mail_text['html']
+
+							if plain_text:
+								text = BeautifulSoup(plain_text, features="lxml").get_text()
+							else:
+								text = mail.get_text_from_html(html_text)
+
+							if sender in black_list:
+								continue
+
 							if len(text) >= 3840:
 								text = text[:3840] + ' ...\n<i>Текст письма обрезан из-за большой длины</i>'
 							if text == '':
@@ -105,20 +153,31 @@ async def parsing():
 							mail_markup = types.InlineKeyboardMarkup()
 							webApp1 = types.WebAppInfo(f"{URL}/mail?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}")
 							webApp2 = types.WebAppInfo(f"{URL}/retell?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}&key={key}")
-							
+							try:
+								score = int(spam_score(text, key))
+							except:
+								score = '?'
 							mail_markup.add(types.InlineKeyboardButton(text='📔Открыть письмо', web_app=webApp1), types.InlineKeyboardButton(text='🤖Пересказать', web_app=webApp2))
-							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+							import base64
+							sender_b64 = base64.b64encode(sender.encode("UTF-8")).decode('UTF-8')
+
+							if score == '?':
+								mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+							else:
+								mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b>🛡Спам</b> — <b>{score}%</b> | <b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
 							#print(mes)
 							await asyncio.sleep(2.0)
-						else:
-							if m_id - 1 != last_m_id:
-								cursor.execute("DELETE FROM last_ids WHERE user_id=? AND login=?", [row[0], row[1]])
-								connect.commit()
-								cursor.execute("INSERT INTO last_ids VALUES(?,?,?);", [row[0], row[1], m_id-1])
-								connect.commit()
-							#print(mail_text)
-							break
 
+						except Exception as e:
+							#print(str(e))
+							#print(traceback.format_exc())
+							if str(e) == 'Failed to fetch mail':
+								if m_id - 1 != last_m_id:
+									cursor.execute("DELETE FROM last_ids WHERE user_id=? AND login=?", [row[0], row[1]])
+									connect.commit()
+									cursor.execute("INSERT INTO last_ids VALUES(?,?,?);", [row[0], row[1], m_id-1])
+									connect.commit()
+								break
 					mail.close()
 				else:
 					print(c)
@@ -188,11 +247,26 @@ async def hand(message):
 					key = 'none'
 				else:
 					key = m[1]
+
+				black_list = []
+				bt = cursor.execute("SELECT * FROM blacklist WHERE user_id=?", (row[0],)).fetchall()
+				for bro in bt:
+					black_list.append(bro[1])
 				while True:
 					m_id += 1
-					mail_text = mail.get_mail_text(str(m_id))
-					if mail_text[0] == True:
-						header, text, sender = mail_text[1][0], mail_text[1][1], mail_text[1][2]
+					#print(m_id)
+					try:
+						mail_text = mail.get_mail_text2(str(m_id))
+						sender, header, plain_text, html_text = mail_text['sender'], mail_text['header'], mail_text['plain'], mail_text['html']
+
+						if plain_text:
+							text = BeautifulSoup(plain_text, features="lxml").get_text()
+						else:
+							text = mail.get_text_from_html(html_text)
+
+						if sender in black_list:
+							continue
+
 						if len(text) >= 3840:
 							text = text[:3840] + ' ...\n<i>Текст письма обрезан из-за большой длины</i>'
 						if text == '':
@@ -201,20 +275,31 @@ async def hand(message):
 						mail_markup = types.InlineKeyboardMarkup()
 						webApp1 = types.WebAppInfo(f"{URL}/mail?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}")
 						webApp2 = types.WebAppInfo(f"{URL}/retell?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}&key={key}")
+						try:
+							score = int(spam_score(text, key))
+						except:
+							score = '?'
 						mail_markup.add(types.InlineKeyboardButton(text='📔Открыть письмо', web_app=webApp1), types.InlineKeyboardButton(text='🤖Пересказать', web_app=webApp2))
-						mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
-						#print(mes)
-						flag_sended = True
-						await asyncio.sleep(2.0)
-					else:
-						if m_id - 1 != last_m_id:
-							cursor.execute("DELETE FROM last_ids WHERE user_id=? AND login=?", [row[0], row[1]])
-							connect.commit()
-							cursor.execute("INSERT INTO last_ids VALUES(?,?,?);", [row[0], row[1], m_id-1])
-							connect.commit()
-						#print(mail_text)
-						break
+						import base64
+						sender_b64 = base64.b64encode(sender.encode("UTF-8")).decode('UTF-8')
 
+						if score == '?':
+							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+						else:
+							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b>🛡Спам</b> — <b>{score}%</b> | <b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+						#print(mes)
+						await asyncio.sleep(2.0)
+
+					except Exception as e:
+						#print(str(e))
+						#print(traceback.format_exc())
+						if str(e) == 'Failed to fetch mail':
+							if m_id - 1 != last_m_id:
+								cursor.execute("DELETE FROM last_ids WHERE user_id=? AND login=?", [row[0], row[1]])
+								connect.commit()
+								cursor.execute("INSERT INTO last_ids VALUES(?,?,?);", [row[0], row[1], m_id-1])
+								connect.commit()
+							break
 				mail.close()
 				if not flag_sended:
 					await bot.send_message(row[0], '*🔕Новых писем нет*', parse_mode='markdown', reply_markup=types.ReplyKeyboardRemove())
@@ -279,7 +364,7 @@ async def my_mails_func(call):
 			if rec == []:
 				last_rec_id = 0
 			else:
-				print(rec)
+				#print(rec)
 				last_rec_id = int(rec[-1][1])
 			cursor.execute("INSERT INTO special_mail_ids VALUES(?,?);", [row[1], last_rec_id+1])
 			connect.commit()
@@ -310,13 +395,54 @@ async def mail_edit_func(call):
 		mail_edit_markup = types.InlineKeyboardMarkup()
 		mail_edit_markup.add(types.InlineKeyboardButton(text='♻Инициировать парсинг', callback_data=f'status_{spec_id}'))
 		#mail_edit_markup.add(types.InlineKeyboardButton(text='♻Инициировать парсинг', web_app=types.WebAppInfo(f'{URL}/parse?login={m[1]}&pass={m[2]}&imap={m[3]}&mail_id={m_id}')))
-		mail_edit_markup.add(types.InlineKeyboardButton(text='🏴Чёрный список', callback_data=f'blacklist_{spec_id}'), types.InlineKeyboardButton(text='❌Отвязать почту', callback_data=f'delete_{spec_id}'))
+		mail_edit_markup.add(types.InlineKeyboardButton(text='🏴Чёрный список', callback_data=f'blacklist'), types.InlineKeyboardButton(text='❌Отвязать почту', callback_data=f'delete_{spec_id}'))
 		mail_edit_markup.add(types.InlineKeyboardButton(text='🔙Назад', callback_data=f'my_mails'))
 		await bot.send_message(call.from_user.id, f'<b>⚒Управление почтой {login}</b>\n\n<b>🌐IMAP-server</b>: {m[3]}\n<b>🔐Ключ доступа</b>: <tg-spoiler>{m[2]}</tg-spoiler>', reply_markup=mail_edit_markup, parse_mode='html')
 
-@bot.callback_query_handler(func=lambda call: call.data[:10] == 'blacklist_')
+@bot.callback_query_handler(func=lambda call: call.data[:9] == 'blacklist')
 async def blacklist_func(call):
-	await bot.answer_callback_query(call.id, 'Soon...', show_alert = True)
+	#await bot.answer_callback_query(call.id, 'Soon...', show_alert = True)
+	try:
+		await bot.delete_message(call.from_user.id, call.message.message_id)
+	except:
+		pass
+	if len(call.data) == 9:
+		num = 0
+	else:
+		num = int(call.data[9:])
+	records = cursor.execute("SELECT * FROM blacklist WHERE user_id=?", (call.from_user.id,)).fetchall()
+	markup_list = types.InlineKeyboardMarkup()
+	h = 1
+	for i in range(len(records)):
+		if 6*num <= i < 6*num + 6:
+			markup_list.add(types.InlineKeyboardButton(text=f'{records[i][1]}', callback_data=f'remove_blacklist{h}'))
+			h+=1
+	if num >= 1:
+		markup_list.add(types.InlineKeyboardButton(text='⬅', callback_data=f'blacklist{num-1}'))
+	if ((len(records) % 6 != 0) and (num+1) <= len(records)//6) or (len(records) % 6 == 0 and (num+1) < len(records)//6):
+		markup_list.add(types.InlineKeyboardButton(text='➡', callback_data=f'blacklist{num+1}'))
+	markup_list.add(types.InlineKeyboardButton(text='🔙В меню', callback_data='menu'))
+	await bot.send_message(call.from_user.id, '<b>🏴Чёрный список</b>\n\nИспользуйте кнопки ниже для ♻удаления адреса из <b>списка👇</b>', reply_markup=markup_list, parse_mode='html')
+
+@bot.callback_query_handler(func=lambda call: call.data[:16] == 'remove_blacklist')
+async def remove_blacklist(call):
+	#print(call.message.reply_markup.keyboard)
+	try:
+		await bot.delete_message(call.from_user.id, call.message.message_id)
+	except:
+		pass
+	mail = ''
+	for b in call.message.reply_markup.keyboard:
+		if b[0].callback_data == call.data:
+			mail = b[0].text
+			break
+
+	cursor.execute("DELETE FROM blacklist WHERE user_id=? AND mail=?", (call.from_user.id, mail))
+	connect.commit()
+	markup_added_blacklist = types.InlineKeyboardMarkup()
+	markup_added_blacklist.add(types.InlineKeyboardButton(text='🏴Чёрный список', callback_data='blacklist'))
+
+	await bot.send_message(call.from_user.id, f'✅Адрес <b>{mail}</b> успешно удалён из <b>чёрного списка</b>.\n\n🛠Управляйте вашим <b>чёрным списком</b> по кнопке ниже👇', reply_markup=markup_added_blacklist, parse_mode='html')
 
 @bot.callback_query_handler(func=lambda call: call.data[:7] == 'delete_')
 async def delete_mail_func(call):
