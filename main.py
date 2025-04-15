@@ -135,7 +135,7 @@ async def parsing():
 						#print(m_id)
 						try:
 							mail_text = mail.get_mail_text2(str(m_id))
-							sender, header, plain_text, html_text = mail_text['sender'], mail_text['header'], mail_text['plain'], mail_text['html']
+							sender, header, plain_text, html_text, count_attachments = mail_text['sender'], mail_text['header'], mail_text['plain'], mail_text['html'], mail_text['count_attachments']
 
 							if plain_text:
 								text = BeautifulSoup(plain_text, features="lxml").get_text()
@@ -150,6 +150,10 @@ async def parsing():
 							if text == '':
 								text = '<i>Пустое сообщение</i>'
 
+							if count_attachments:
+								att = f'<a href="{URL}/download_attachment?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}">📎Прикреплённые файлы</a>'
+							else:
+								att = ''
 							mail_markup = types.InlineKeyboardMarkup()
 							webApp1 = types.WebAppInfo(f"{URL}/mail?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}")
 							webApp2 = types.WebAppInfo(f"{URL}/retell?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}&key={key}")
@@ -162,9 +166,9 @@ async def parsing():
 							sender_b64 = base64.b64encode(sender.encode("UTF-8")).decode('UTF-8')
 
 							if score == '?':
-								mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+								mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>{att}\n\n<b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
 							else:
-								mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b>🛡Спам</b> — <b>{score}%</b> | <b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+								mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>{att}\n\n<b>🛡Спам</b> — <b>{score}%</b> | <b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
 							#print(mes)
 							await asyncio.sleep(2.0)
 
@@ -257,7 +261,7 @@ async def hand(message):
 					#print(m_id)
 					try:
 						mail_text = mail.get_mail_text2(str(m_id))
-						sender, header, plain_text, html_text = mail_text['sender'], mail_text['header'], mail_text['plain'], mail_text['html']
+						sender, header, plain_text, html_text, count_attachments = mail_text['sender'], mail_text['header'], mail_text['plain'], mail_text['html'], mail_text['count_attachments']
 
 						if plain_text:
 							text = BeautifulSoup(plain_text, features="lxml").get_text()
@@ -272,6 +276,10 @@ async def hand(message):
 						if text == '':
 							text = '<i>Пустое сообщение</i>'
 
+						if count_attachments:
+							att = f'<a href="{URL}/download_attachment?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}">📎Прикреплённые файлы</a>'
+						else:
+							att = ''
 						mail_markup = types.InlineKeyboardMarkup()
 						webApp1 = types.WebAppInfo(f"{URL}/mail?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}")
 						webApp2 = types.WebAppInfo(f"{URL}/retell?l={row[1]}&p={row[2]}&i={row[3]}&mid={m_id}&key={key}")
@@ -284,10 +292,11 @@ async def hand(message):
 						sender_b64 = base64.b64encode(sender.encode("UTF-8")).decode('UTF-8')
 
 						if score == '?':
-							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>{att}\n\n<b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
+							flag_sended = True
 						else:
-							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>\n\n<b>🛡Спам</b> — <b>{score}%</b> | <b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)
-						#print(mes)
+							mes = await bot.send_message(row[0], f'✉ <b>{header}</b>\n👤 <i>{sender}</i>\n<blockquote expandable>{text}</blockquote>{att}\n\n<b>🛡Спам</b> — <b>{score}%</b> | <b><a href="t.me/e_mailed_bot?start=blist_{sender_b64}">🏴В чёрный список</a></b>', parse_mode='html', link_preview_options=types.LinkPreviewOptions(True), reply_markup=mail_markup)						#print(mes)
+							flag_sended = True
 						await asyncio.sleep(2.0)
 
 					except Exception as e:

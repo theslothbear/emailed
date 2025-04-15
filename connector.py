@@ -55,6 +55,7 @@ class MailConnector():
 			raise Exception(f'Failed to fetch mail')
 
 		msg = email.message_from_bytes(msg_data[0][1])
+		#print(msg)
 		sender = email.utils.parseaddr(msg['from'])[1]
 		
 		header, encoding = decode_header(msg['Subject'])[0]
@@ -64,13 +65,15 @@ class MailConnector():
 		if header is None:
 			header = '[Без темы]'
 
-		plain_text, html_text = '', ''
+		plain_text, html_text, count_attachments = '', '', 0
 		if msg.is_multipart() == True:
 			for part in msg.walk():
 				content_type = part.get_content_type()
-				print(content_type)
+				
 				content_disposition = str(part.get("Content-Disposition"))
 				if "attachment" in content_disposition:
+					#print(part)
+					count_attachments += 1
 					continue
 				
 				if 'text/plain' in content_type:
@@ -82,6 +85,8 @@ class MailConnector():
 
 			content_disposition = str(msg.get("Content-Disposition"))
 			if "attachment" in content_disposition:
+				#print(part)
+				count_attachments += 1
 				pass
 			
 			elif 'text/plain' in content_type:
@@ -89,7 +94,7 @@ class MailConnector():
 			elif 'text/html' in content_type:
 				html_text += self.decode_part_content(msg)
 				
-		return {'sender': sender, 'header': header, 'plain': plain_text, 'html': html_text}
+		return {'sender': sender, 'header': header, 'plain': plain_text, 'html': html_text, 'count_attachments': count_attachments}
 
 	def decode_part_content(self, part: email.message.Message) -> str:
 		payload = part.get_payload(decode=True)
@@ -118,3 +123,52 @@ class MailConnector():
 		text = text.replace('>', '&gt;')
 
 		return text.strip().lstrip()
+
+	def get_attachments(self, mail_id: Union[bytes, str]) -> dict:
+		self.imap.select("INBOX")
+		res, msg_data = self.imap.uid('fetch', mail_id, '(RFC822)')
+		
+		if res != "OK" or not msg_data or msg_data == [None]:
+			raise Exception(f'Failed to fetch mail')
+
+		msg = email.message_from_bytes(msg_data[0][1])
+		#print(msg)
+		
+		header, encoding = decode_header(msg['Subject'])[0]
+		if isinstance(header, bytes):
+			header = header.decode(encoding if encoding else 'utf-8')
+		
+		if header is None:
+			header = '[Без темы]'
+
+		sp = []
+		if msg.is_multipart() == True:
+			for part in msg.walk():
+				content_type = part.get_content_type()
+				
+				content_disposition = str(part.get("Content-Disposition"))
+				if "attachment" in content_disposition:
+					#print(part)
+					
+					filename = part.get_filename()
+					if filename:
+						filename, encoding = decode_header(filename)[0]
+						if isinstance(filename, bytes):
+							filename = filename.decode(encoding or 'utf-8', errors='replace')
+						
+						sp.append([filename, part.get_payload(decode=True)])
+							
+		else:
+			content_type = msg.get_content_type()
+			content_disposition = str(msg.get("Content-Disposition"))
+			if "attachment" in content_disposition:
+				#print(part)
+				filename = part.get_filename()
+				if filename:
+					filename, encoding = decode_header(filename)[0]
+					if isinstance(filename, bytes):
+						filename = filename.decode(encoding or 'utf-8', errors='replace')
+					
+					sp.append([filename, part.get_payload(decode=True)])
+
+		return {'header': header, 'attachments': sp}
